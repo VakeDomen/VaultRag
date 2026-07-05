@@ -207,6 +207,28 @@ pub async fn upsert_chunks(
         if let Some(section) = &chunk.section {
             payload.insert("section".to_string(), section.clone().into());
         }
+        if !chunk.section_hierarchy.is_empty() {
+            payload.insert(
+                "section_hierarchy".to_string(),
+                qdrant_client::qdrant::Value {
+                    kind: Some(qdrant_client::qdrant::value::Kind::ListValue(
+                        qdrant_client::qdrant::ListValue {
+                            values: chunk
+                                .section_hierarchy
+                                .iter()
+                                .map(|s| qdrant_client::qdrant::Value {
+                                    kind: Some(
+                                        qdrant_client::qdrant::value::Kind::StringValue(
+                                            s.clone(),
+                                        ),
+                                    ),
+                                })
+                                .collect(),
+                        },
+                    )),
+                },
+            );
+        }
         if !chunk.tags.is_empty() {
             payload.insert(
                 "tags".to_string(),

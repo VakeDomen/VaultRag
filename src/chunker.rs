@@ -7,6 +7,7 @@ pub struct Chunk {
     pub note_path: String,
     pub note_title: String,
     pub section: Option<String>,
+    pub section_hierarchy: Vec<String>,
     pub chunk_index: usize,
     pub total_chunks_in_section: usize,
     pub text: String,
@@ -14,7 +15,20 @@ pub struct Chunk {
     pub file_type: String,
 }
 
-pub fn chunk_file(path: &str, max_chunk_words: usize) -> Result<Vec<Chunk>> {
+#[derive(Debug)]
+enum Block {
+    CodeFence(String),
+    Table(String),
+    Blockquote(String),
+    List(String),
+    Heading { level: usize, text: String },
+    Paragraph(String),
+}
+
+const TAU_MIN: usize = 100;
+const TAU_MAX: usize = 1500;
+
+pub fn chunk_file(path: &str, _max_chunk_words: usize) -> Result<Vec<Chunk>> {
     let content = fs::read_to_string(path)?;
     let (frontmatter_tags, body) = parse_frontmatter(&content);
     let note_path = path.to_string();
@@ -24,11 +38,12 @@ pub fn chunk_file(path: &str, max_chunk_words: usize) -> Result<Vec<Chunk>> {
         .map(|e| e.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let chunks = split_hierarchical(body, max_chunk_words);
+    let blocks = parse_blocks(body);
+    let raw_chunks = build_chunks(&blocks);
 
-    let total = chunks.len();
     let mut result = Vec::new();
-    for (i, (section, text)) in chunks.iter().enumerate() {
+    for (i, (hierarchy, text)) in raw_chunks.iter().enumerate() {
+        let section = hierarchy.last().cloned();
         let chunk_id = format!(
             "{}::{}::{}",
             note_path,
@@ -39,9 +54,10 @@ pub fn chunk_file(path: &str, max_chunk_words: usize) -> Result<Vec<Chunk>> {
             chunk_id,
             note_path: note_path.clone(),
             note_title: note_title.clone(),
-            section: section.clone(),
+            section,
+            section_hierarchy: hierarchy.clone(),
             chunk_index: i,
-            total_chunks_in_section: total,
+            total_chunks_in_section: raw_chunks.len(),
             text: text.clone(),
             tags: frontmatter_tags.clone(),
             file_type: file_type.clone(),
@@ -51,13 +67,255 @@ pub fn chunk_file(path: &str, max_chunk_words: usize) -> Result<Vec<Chunk>> {
     Ok(result)
 }
 
-pub fn chunk_all_files(files: &[String], max_chunk_words: usize) -> Result<Vec<Chunk>> {
-    let mut all = Vec::new();
-    for path in files {
-        let chunks = chunk_file(path, max_chunk_words)?;
-        all.extend(chunks);
+/// Parse markdown into typed blocks.
+fn parse_blocks(body: &str) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let lines: Vec<&str> = body.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+
+        // Code fence
+        if let Some(fence) = fence_match(line) {
+            let mut code = String::from(line);
+            i += 1;
+            while i < lines.len() && !fence_match(lines[i]).is_some_and(|f| f == fence) {
+                code.push('\n');
+                code.push_str(lines[i]);
+                i += 1;
+            }
+            if i < lines.len() {
+                code.push('\n');
+                code.push_str(lines[i]);
+                i += 1;
+            }
+            blocks.push(Block::CodeFence(code));
+            continue;
+        }
+
+        // Heading
+        if let Some(level) = heading_level(line) {
+            let text = line[level..].trim().to_string();
+            blocks.push(Block::Heading { level, text });
+            i += 1;
+            continue;
+        }
+
+        // Blockquote
+        if line.trim_start().starts_with('>') {
+            let mut quote = String::new();
+            while i < lines.len() && lines[i].trim_start().starts_with('>') {
+                if !quote.is_empty() {
+                    quote.push('\n');
+                }
+                quote.push_str(lines[i]);
+                i += 1;
+            }
+            blocks.push(Block::Blockquote(quote));
+            continue;
+        }
+
+        // Table (line contains | and is a separator or data row)
+        if is_table_line(line) {
+            let mut table = String::new();
+            while i < lines.len() && is_table_line(lines[i]) {
+                if !table.is_empty() {
+                    table.push('\n');
+                }
+                table.push_str(lines[i]);
+                i += 1;
+            }
+            blocks.push(Block::Table(table));
+            continue;
+        }
+
+        // List
+        if is_list_line(line) {
+            let mut list = String::new();
+            while i < lines.len() && is_list_line(lines[i]) {
+                if !list.is_empty() {
+                    list.push('\n');
+                }
+                list.push_str(lines[i]);
+                i += 1;
+            }
+            blocks.push(Block::List(list));
+            continue;
+        }
+
+        // Paragraph (collect consecutive non-empty, non-special lines)
+        let mut para = String::new();
+        while i < lines.len() {
+            let l = lines[i];
+            if l.trim().is_empty() {
+                break;
+            }
+            if fence_match(l).is_some() || heading_level(l).is_some()
+                || l.trim_start().starts_with('>')
+                || is_table_line(l) || is_list_line(l)
+            {
+                break;
+            }
+            if !para.is_empty() {
+                para.push('\n');
+            }
+            para.push_str(l);
+            i += 1;
+        }
+        if !para.is_empty() {
+            blocks.push(Block::Paragraph(para));
+        } else {
+            // Empty line — skip
+            i += 1;
+        }
     }
-    Ok(all)
+
+    blocks
+}
+
+fn fence_match(line: &str) -> Option<&'static str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with("```") {
+        Some("```")
+    } else if trimmed.starts_with("~~~") {
+        Some("~~~")
+    } else {
+        None
+    }
+}
+
+fn heading_level(line: &str) -> Option<usize> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+    let level = trimmed.chars().take_while(|c| *c == '#').count();
+    if level > 6 {
+        return None;
+    }
+    if trimmed.as_bytes().get(level).copied() != Some(b' ') {
+        return None;
+    }
+    Some(level)
+}
+
+fn is_table_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.contains('|') && trimmed.chars().filter(|c| *c == '|').count() >= 2
+}
+
+fn is_list_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    // Unordered: -, *, +
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        return true;
+    }
+    // Ordered: 1. 2. etc
+    if let Some(rest) = trimmed.strip_suffix('.') {
+        if rest.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
+            // Check it's actually at the start (after optional whitespace)
+            let prefix_len = trimmed.len() - rest.len() - 1;
+            let before = &trimmed[..prefix_len];
+            return before.chars().all(|c| c.is_whitespace());
+        }
+    }
+    false
+}
+
+/// Build chunks from blocks using τmin/τmax and header stack.
+fn build_chunks(blocks: &[Block]) -> Vec<(Vec<String>, String)> {
+    let mut chunks: Vec<(Vec<String>, String)> = Vec::new();
+    let mut header_stack: Vec<(usize, String)> = Vec::new();
+    let mut current_blocks: Vec<String> = Vec::new();
+    let mut current_size: usize = 0;
+
+    fn section_title(stack: &[(usize, String)]) -> Vec<String> {
+        stack.iter().map(|(_, t)| t.clone()).collect()
+    }
+
+    fn flush(chunks: &mut Vec<(Vec<String>, String)>, stack: &[(usize, String)], blocks: &mut Vec<String>, _size: &mut usize) {
+        if blocks.is_empty() {
+            return;
+        }
+        let text = blocks.join("\n\n");
+        blocks.clear();
+        *_size = 0;
+        let hierarchy = section_title(stack);
+        // Skip if text is only whitespace
+        if text.trim().is_empty() {
+            return;
+        }
+        chunks.push((hierarchy, text));
+    }
+
+    for block in blocks {
+        match block {
+            Block::Heading { level, text } => {
+                // Flush current chunk before new heading
+                flush(&mut chunks, &header_stack, &mut current_blocks, &mut current_size);
+
+                // Update header stack
+                while let Some(&(top_level, _)) = header_stack.last() {
+                    if top_level >= *level {
+                        header_stack.pop();
+                    } else {
+                        break;
+                    }
+                }
+                header_stack.push((*level, text.clone()));
+
+                // Heading starts a new chunk (heading text is included)
+                current_blocks.push(block_text(block));
+                current_size = block_text(block).len();
+            }
+            _ => {
+                let text = block_text(block);
+                let block_size = text.len();
+
+                if current_blocks.is_empty() {
+                    // First block in chunk
+                    current_blocks.push(text);
+                    current_size = block_size;
+                } else if current_size + 2 + block_size <= TAU_MAX {
+                    // Fits
+                    current_blocks.push(text);
+                    current_size += 2 + block_size;
+                } else if current_size >= TAU_MIN {
+                    // Current chunk is big enough, flush it and start new
+                    flush(&mut chunks, &header_stack, &mut current_blocks, &mut current_size);
+                    current_blocks.push(text);
+                    current_size = block_size;
+                } else {
+                    // Below τmin, keep growing (oversized chunk)
+                    current_blocks.push(text);
+                    current_size += 2 + block_size;
+                }
+            }
+        }
+    }
+
+    flush(&mut chunks, &header_stack, &mut current_blocks, &mut current_size);
+
+    chunks
+}
+
+fn block_text(block: &Block) -> String {
+    match block {
+        Block::CodeFence(t) => t.clone(),
+        Block::Table(t) => t.clone(),
+        Block::Blockquote(t) => t.clone(),
+        Block::List(t) => t.clone(),
+        Block::Heading { text, .. } => {
+            // Reconstruct heading with # markers for context
+            let level = match block {
+                Block::Heading { level, .. } => *level,
+                _ => unreachable!(),
+            };
+            format!("{} {}", "#".repeat(level), text)
+        }
+        Block::Paragraph(t) => t.clone(),
+    }
 }
 
 fn parse_frontmatter(content: &str) -> (Vec<String>, &str) {
@@ -108,151 +366,4 @@ fn extract_title(body: &str, path: &str) -> String {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "untitled".to_string())
-}
-
-fn split_hierarchical(body: &str, max_words: usize) -> Vec<(Option<String>, String)> {
-    let mut result = Vec::new();
-    split_recursive(body, None, max_words, &mut result);
-    if result.is_empty() {
-        result.push((None, body.to_string()));
-    }
-    result
-}
-
-fn split_recursive(
-    text: &str,
-    section: Option<String>,
-    max_words: usize,
-    result: &mut Vec<(Option<String>, String)>,
-) {
-    let text = text.trim();
-    if text.is_empty() {
-        return;
-    }
-
-    if word_count(text) <= max_words {
-        result.push((section, text.to_string()));
-        return;
-    }
-
-    // Try splitting by ## headings
-    let h2_sections = split_by_heading(text, "## ");
-    if h2_sections.len() > 1 {
-        for (heading, content) in h2_sections {
-            let sec = heading.or_else(|| section.clone());
-            split_recursive(&content, sec, max_words, result);
-        }
-        return;
-    }
-
-    // Try splitting by ### headings
-    let h3_sections = split_by_heading(text, "### ");
-    if h3_sections.len() > 1 {
-        for (heading, content) in h3_sections {
-            let sec = heading.or_else(|| section.clone());
-            split_recursive(&content, sec, max_words, result);
-        }
-        return;
-    }
-
-    // Split by paragraphs
-    let paragraphs: Vec<&str> = text
-        .split("\n\n")
-        .map(|p| p.trim())
-        .filter(|p| !p.is_empty())
-        .collect();
-
-    if paragraphs.len() > 1 {
-        for para in paragraphs {
-            split_recursive(para, section.clone(), max_words, result);
-        }
-        return;
-    }
-
-    // Single paragraph — split by sentences
-    for chunk in split_by_sentences(text, max_words) {
-        result.push((section.clone(), chunk));
-    }
-}
-
-/// Split text into sections by a heading marker (e.g. "## " or "### ").
-/// Returns (heading_name, content_without_heading) for each section.
-/// Content before the first heading has heading_name = None.
-fn split_by_heading(text: &str, marker: &str) -> Vec<(Option<String>, String)> {
-    let mut sections = Vec::new();
-    let mut current_heading: Option<String> = None;
-    let mut current_lines: Vec<&str> = Vec::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with(marker) {
-            // Flush current section
-            if !current_lines.is_empty() {
-                sections.push((current_heading.take(), current_lines.join("\n")));
-                current_lines = Vec::new();
-            }
-            current_heading = Some(trimmed[marker.len()..].trim().to_string());
-        } else {
-            current_lines.push(line);
-        }
-    }
-
-    if !current_lines.is_empty() {
-        sections.push((current_heading.take(), current_lines.join("\n")));
-    }
-
-    sections
-}
-
-fn word_count(text: &str) -> usize {
-    text.split_whitespace().count()
-}
-
-fn split_by_sentences(text: &str, max_words: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut current_words = 0;
-
-    for sentence in split_sentences(text) {
-        let sw = word_count(&sentence);
-        if current_words + sw > max_words && !current.is_empty() {
-            chunks.push(current.trim().to_string());
-            current = String::new();
-            current_words = 0;
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(&sentence);
-        current_words += sw;
-    }
-
-    if !current.is_empty() {
-        chunks.push(current.trim().to_string());
-    }
-
-    if chunks.is_empty() {
-        chunks.push(text.to_string());
-    }
-
-    chunks
-}
-
-fn split_sentences(text: &str) -> Vec<String> {
-    let mut sentences = Vec::new();
-    let mut current = String::new();
-
-    for ch in text.chars() {
-        current.push(ch);
-        if ch == '.' || ch == '!' || ch == '?' {
-            sentences.push(current.trim().to_string());
-            current.clear();
-        }
-    }
-
-    if !current.trim().is_empty() {
-        sentences.push(current.trim().to_string());
-    }
-
-    sentences
 }

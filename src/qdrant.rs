@@ -175,12 +175,12 @@ async fn ensure_collection(config: &Config, client: &Qdrant) -> Result<()> {
 pub async fn upsert_chunks(
     client: &Qdrant,
     config: &Config,
-    points: Vec<(Vec<f32>, Chunk)>,
+    points: Vec<(Vec<f32>, String, Chunk)>,
 ) -> Result<()> {
     let collection_name = &config.qdrant.collection_name;
     let mut point_structs = Vec::with_capacity(points.len());
 
-    for (i, (vector, chunk)) in points.iter().enumerate() {
+    for (i, (vector, question, chunk)) in points.iter().enumerate() {
         let mut hasher = DefaultHasher::new();
         chunk.chunk_id.hash(&mut hasher);
         i.hash(&mut hasher);
@@ -193,6 +193,7 @@ pub async fn upsert_chunks(
             ("note_path".to_string(), chunk.note_path.clone().into()),
             ("note_title".to_string(), chunk.note_title.clone().into()),
             ("file_type".to_string(), chunk.file_type.clone().into()),
+            ("question".to_string(), question.clone().into()),
             ("start_line".to_string(), (chunk.start_line as f64).into()),
             ("end_line".to_string(), (chunk.end_line as f64).into()),
             ("chunk_index".to_string(), (chunk.chunk_index as f64).into()),

@@ -112,10 +112,12 @@ pub async fn query(
             let end = get_f64(p, "end_line").unwrap_or(0.0) as usize;
             let chunk_text = read_lines(note_path, start, end).unwrap_or_default();
             let snippet = extract_snippet(&chunk_text, 300);
+            let question = get_str(p, "question");
 
             println!("  {}[{}]{}  {}L{}-L{}{}",
                 c::CYAN, section, c::RESET,
                 c::DIM, start + 1, end + 1, c::RESET);
+            println!("  {}Q: {}{}", c::GREEN, question, c::RESET);
             println!("  {}", snippet);
         }
     }

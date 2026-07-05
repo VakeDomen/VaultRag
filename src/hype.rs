@@ -8,13 +8,30 @@ impl HyPEGenerator {
     /// Generate hypothetical questions for a single chunk.
     pub async fn generate(config: &Config, text: &str) -> Result<Vec<String>> {
         let prompt = format!(
-            "Analyze the passage below and generate essential questions that, \
-             when answered, capture the main points and core meaning. \
-             Questions should be exhaustive and understandable without context. \
-             Named entities should be referenced by their full name.\n\n\
-             Passage:\n{text}\n\n\
-             Questions:"
+            "Analyze the passage below and generate standalone hypothetical user questions that this passage could answer.
+
+            The questions should be useful for retrieval in a RAG system. They should cover the passage exhaustively while avoiding duplicates.
+
+            Rules:
+
+            * Each question must be understandable without seeing the passage.
+            * Each question must be answerable from the passage.
+            * Each question must include at least one concrete anchor from the passage.\
+            * Valid anchors include full named entities, technical terms, dates, numbers, locations, product names, method names, events, decisions, requirements, constraints, causes, effects, or relationships.\
+            * Use full names for all named entities.\
+            * Avoid pronouns or vague references.\
+            * Do not generate generic questions such as 'What is described in the passage?', 'What are the main points?', or 'What does the text say?'\
+            * A question could apply to almost any passage, it is too generic so needs to be written with a concrete anchor.\
+            * Include questions about key facts, definitions, relationships, causes, effects, requirements, constraints, comparisons, dates, numbers, and conclusions when present.\
+            * Do not generate questions about minor wording details unless they are important to the meaning.\
+            * Each question should be in own line, one line per question. no other delimiters \
+            \
+            \
+             Passage:\n\n{text}"
         );
+
+
+
 
         let mut builder = InvocationBuilder::default()
             .model(&config.llm.model)

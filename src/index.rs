@@ -125,8 +125,8 @@ async fn process_file(
         let refs: Vec<&str> = questions.iter().map(|s| s.as_str()).collect();
         let embeddings = Embedder::embed_batch(config, &refs).await?;
 
-        for embedding in embeddings {
-            all_points.push((embedding, chunk.clone()));
+        for (question, embedding) in questions.into_iter().zip(embeddings) {
+            all_points.push((embedding, question, chunk.clone()));
         }
     }
 

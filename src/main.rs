@@ -2,6 +2,7 @@ mod chunker;
 mod cli;
 mod config;
 mod embed;
+mod hash_tree;
 mod hype;
 mod index;
 mod qdrant;
@@ -98,5 +99,5 @@ fn resolve_vault_path(config: &Config, cli_path: Option<String>) -> Result<Strin
     if let Some(p) = &config.vault.path {
         return Ok(p.clone());
     }
-    bail!("no vault path set. Use --path or 'vaultrag config set vault.path <path>'")
+    bail!("no vault path set. Use --path or 'vaultfind config set vault.path <path>'")
 }

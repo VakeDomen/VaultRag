@@ -1,12 +1,11 @@
 use crate::chunker;
 use crate::config::Config;
 use crate::embed::Embedder;
+use crate::hash_tree::HashTree;
 use crate::hype::HyPEGenerator;
 use crate::qdrant;
 use anyhow::{bail, Context, Result};
-use qdrant_client::qdrant::CountPointsBuilder;
 use qdrant_client::Qdrant;
-use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -15,34 +14,91 @@ use walkdir::WalkDir;
 pub async fn index(config: &Config, vault_path: &str, client: &Qdrant) -> Result<()> {
     validate_vault_path(vault_path)?;
     let files = discover_md_files(vault_path)?;
-    check_collection_state(config, client).await?;
 
-    println!("Chunking and indexing {} files...", files.len());
+    let config_dir = Config::config_dir()?;
+    let prev_tree = HashTree::load(&config_dir)?;
+    let (to_index, to_remove, skipped) = HashTree::diff(&files, vault_path, &prev_tree)?;
 
+    println!(
+        "{} to index, {} to remove, {} unchanged",
+        to_index.len(),
+        to_remove.len(),
+        skipped
+    );
+
+    if to_remove.is_empty() && to_index.is_empty() {
+        println!("Nothing to do.");
+        return Ok(());
+    }
+
+    // Remove points for deleted files
+    for path in &to_remove {
+        let name = Path::new(path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if let Err(e) = qdrant::delete_by_note_path(client, config, path).await {
+            eprintln!("  {name}: failed to remove — {e:#}");
+        }
+    }
+
+    // Index new/changed files
     let semaphore = Arc::new(Semaphore::new(config.chunking.parallelism));
     let config = Arc::new(config.clone());
     let client = client.clone();
+    let mut tree = prev_tree;
 
     let mut handles = Vec::new();
 
-    for file_path in files {
+    for file_path in to_index {
         let permit = semaphore.clone().acquire_owned().await;
         let config = config.clone();
         let client = client.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = permit;
+            // Remove old points first (no-op if file is new)
+            let _ = qdrant::delete_by_note_path(&client, &config, &file_path).await;
             let result = process_file(&config, &client, &file_path).await;
             (file_path, result)
         }));
     }
 
     for handle in handles {
-        let (_file_path, result) = handle.await?;
+        let (file_path, result) = handle.await?;
         if let Err(e) = result {
-            eprintln!("  error — {e:#}");
+            let name = Path::new(&file_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            eprintln!("  {name}: error — {e:#}");
+            continue;
+        }
+
+        // Update hash tree entry
+        let vault = Path::new(vault_path);
+        if let Some(rel) = pathdiff::diff_paths(&file_path, vault) {
+            let rel = rel.to_string_lossy().to_string();
+            if let Ok(hash) = HashTree::compute_hash(&file_path) {
+                if let Ok(mtime_ns) = HashTree::mtime_nanos(&file_path) {
+                    tree.files.insert(
+                        rel,
+                        crate::hash_tree::FileEntry { hash, mtime_ns },
+                    );
+                }
+            }
         }
     }
+
+    // Remove deleted files from tree
+    for path in &to_remove {
+        let vault = Path::new(vault_path);
+        if let Some(rel) = pathdiff::diff_paths(path, vault) {
+            tree.files.remove(&rel.to_string_lossy().to_string());
+        }
+    }
+
+    tree.save(&config_dir)?;
 
     println!();
     println!("Done.");
@@ -147,37 +203,4 @@ fn discover_md_files(vault_path: &str) -> Result<Vec<String>> {
     }
 
     Ok(files)
-}
-
-async fn check_collection_state(config: &Config, client: &Qdrant) -> Result<()> {
-    let collection_name = &config.qdrant.collection_name;
-
-    let count = client
-        .count(CountPointsBuilder::new(collection_name))
-        .await
-        .context("failed to count points in collection")?;
-
-    let count = count.result.map(|r| r.count as u64).unwrap_or(0);
-
-    if count > 0 {
-        eprint!(
-            "Collection '{}' already has {} point(s). Re-index? [y/N] ",
-            collection_name, count
-        );
-        let _ = std::io::stdout().flush();
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-
-        if input != "y" && input != "yes" {
-            println!("Aborting.");
-            std::process::exit(0);
-        }
-
-        qdrant::clear_collection(config, client).await?;
-        println!("Cleared existing points.");
-    }
-
-    Ok(())
 }

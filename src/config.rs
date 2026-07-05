@@ -66,8 +66,8 @@ impl Default for Config {
                 grpc_port: 6339,
                 rest_port: 6338,
                 collection_name: "vault_chunks".to_string(),
-                docker_container_name: "vaultrag-qdrant".to_string(),
-                docker_volume_name: "vaultrag_data".to_string(),
+                docker_container_name: "vaultfind-qdrant".to_string(),
+                docker_volume_name: "vaultfind_data".to_string(),
                 docker_image: "qdrant/qdrant:latest".to_string(),
             },
             embedding: EmbeddingConfig {
@@ -85,7 +85,7 @@ impl Config {
     pub fn config_dir() -> Result<PathBuf> {
         let dir = dirs::config_dir()
             .context("could not find config directory")?
-            .join("vaultrag");
+            .join("vaultfind");
         Ok(dir)
     }
 

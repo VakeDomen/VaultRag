@@ -1,5 +1,5 @@
 [package]
-name = "vault_rag"
+name = "vaultfind"
 version = "0.1.0"
 edition = "2024"
 
@@ -14,3 +14,6 @@ qdrant-client = "1.13"
 reqwest = { version = "0.12", features = ["json"] }
 dirs = "6.0"
 walkdir = "2"
+pathdiff = "0.2.3"
+sha2 = "0.11.0"
+serde_json = "1.0.150"

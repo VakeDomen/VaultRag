@@ -3,7 +3,7 @@ use crate::config::Config;
 use anyhow::{bail, Context, Result};
 use qdrant_client::config::QdrantConfig;
 use qdrant_client::qdrant::{
-    point_id, CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId,
+    point_id, Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId,
     PointStruct, UpsertPointsBuilder, VectorParamsBuilder,
 };
 use qdrant_client::Qdrant;
@@ -250,6 +250,21 @@ pub async fn clear_collection(config: &Config, client: &Qdrant) -> Result<()> {
         )
         .await
         .with_context(|| format!("failed to clear collection '{}'", collection_name))?;
+    Ok(())
+}
+
+/// Delete all points matching a specific note_path.
+pub async fn delete_by_note_path(
+    client: &Qdrant,
+    config: &Config,
+    note_path: &str,
+) -> Result<()> {
+    let collection_name = &config.qdrant.collection_name;
+    let filter = Filter::must([Condition::matches("note_path", note_path.to_string())]);
+    client
+        .delete_points(DeletePointsBuilder::new(collection_name).points(filter))
+        .await
+        .with_context(|| format!("failed to delete points for {}", note_path))?;
     Ok(())
 }
 

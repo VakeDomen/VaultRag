@@ -47,6 +47,7 @@ async fn main() -> Result<()> {
                     "llm.base_url",
                     "llm.api_key",
                     "chunking.max_chunk_words",
+                    "chunking.max_file_bytes",
                     "chunking.parallelism",
                     "qdrant.host",
                     "qdrant.grpc_port",

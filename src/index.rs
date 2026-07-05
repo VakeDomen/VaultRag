@@ -111,6 +111,19 @@ async fn process_file(
     client: &Qdrant,
     file_path: &str,
 ) -> Result<(usize, usize)> {
+    let meta = match std::fs::metadata(file_path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("  {}: skipping — {e}", Path::new(file_path).file_name().unwrap_or_default().to_string_lossy());
+            return Ok((0, 0));
+        }
+    };
+    if meta.len() > config.chunking.max_file_bytes as u64 {
+        let name = Path::new(file_path).file_name().map(|s| s.to_string_lossy()).unwrap_or_default();
+        eprintln!("  {name}: skipping — file too large ({} bytes, limit {})", meta.len(), config.chunking.max_file_bytes);
+        return Ok((0, 0));
+    }
+
     let chunks = chunker::chunk_file(file_path, config.chunking.max_chunk_words)
         .context("failed to chunk file")?;
 
@@ -184,6 +197,10 @@ fn discover_md_files(vault_path: &str) -> Result<Vec<String>> {
         if entry.file_type().is_file() {
             let name = entry.file_name().to_string_lossy();
             if name.ends_with(".md") {
+                // Skip excalidraw drawings (they're large JSON blobs, not text)
+                if name.ends_with(".excalidraw.md") {
+                    continue;
+                }
                 files.push(entry.path().to_string_lossy().to_string());
             }
         }

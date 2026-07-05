@@ -1,8 +1,8 @@
 # VaultFind
 
-Semantic search over an Obsidian vault using HyPE (Hypothetical Prompt Embeddings). Each chunk of a markdown file is passed to an LLM which generates hypothetical questions a user might ask about that content. Those questions are embedded and stored in Qdrant. At query time, your query is embedded directly and matched against the question vectors — question-to-question search.
+Semantic search over an Obsidian vault using **HyPE** (Hypothetical Prompt Embeddings). Each chunk of a markdown file is passed to an LLM which generates hypothetical questions a user might ask about that content. Those questions are embedded and stored in Qdrant. At query time, your query is embedded directly and matched against the question vectors — question-to-question search.
 
-No text is indexed directly; only the LLM-generated questions. The original chunk text is stored alongside for snippets.
+Only the LLM-generated questions and metadata (path, line range, section) are stored in Qdrant. The original text is read from disk at query time to produce snippets.
 
 ## Quickstart
 
@@ -52,7 +52,7 @@ Arguments:
 - `query` (positional) — the search query
 - `-n` — number of file results (default: 5)
 
-Internally fetches `n × 10` candidates from Qdrant, deduplicates by chunk, groups by file, and returns the top `n` files with all their matching chunks.
+Internally fetches `n × 10` candidates from Qdrant, deduplicates by `chunk_id`, groups by file, and returns the top `n` files with all their matching chunks.
 
 ### `vaultfind config`
 
@@ -116,9 +116,10 @@ Both LLM and embedding configs support `provider`, `base_url`, and `api_key`. Su
 2. Compare mtime + SHA-256 against previous run (hash tree)
 3. New/changed files:
    - Delete old Qdrant points for that file
-   - Split file hierarchically: `##` → `###` → paragraphs → sentences (recursive, only if chunk exceeds `max_chunk_words`)
+   - Parse markdown into typed blocks (code fences, tables, blockquotes, lists, headings, paragraphs) — **never** split code blocks, tables, lists, or blockquotes
+   - Build chunks using τmin (100 chars) / τmax (1500 chars) thresholds with a header stack for section hierarchy
    - For each chunk, call LLM to generate hypothetical questions
-   - Embed all questions, upsert into Qdrant
+   - Embed each question, upsert into Qdrant with question text, file path, and line range
 4. Remove Qdrant points for deleted files
 5. Save updated hash tree
 
@@ -128,26 +129,46 @@ Both LLM and embedding configs support `provider`, `base_url`, and `api_key`. Su
 2. Search Qdrant (cosine similarity) — fetches `n × 10` candidates
 3. Deduplicate by `chunk_id`
 4. Group by file, take top `n` files
-5. Print results with score, file path, section, and snippet
+5. For each chunk, read the original text from disk using stored line range
+6. Print results with score, file path, section, question, and snippet
 
 ## Output format
 
 ```
-**World Models**  ──  85% match
+World Models  ──  85% match
   /home/.../world-models.md
 
-  [__root__]
+  [__root__]  L1-L15
+  Q: What are world models and how do they work?
   # World Models\n\nWorld models are internal models of the environment...
+
+  ──
+  [Architecture]  L16-L42
+  Q: How do world models enable planning in latent space?
+  ### Architecture\n- Encoder maps observations to latent states...
 
 ══════════════════════════════════════════════════
 
-**LeWorldModel (LeWM)**  ──  78% match
+LeWorldModel (LeWM)  ──  78% match
   /home/.../leworldmodel.md
 
-  [Connections]
-  - [[jepa]] — Joint Embedding Predictive Architecture...
-
-  ──
-  [Architecture]
-  ### Components\n- **Encoder:** ViT-Tiny...
+  [Connections]  L1-L8
+  Q: How does JEPA relate to world models?
+  - [[jepa]] — Joint Embedding Predictive Architecture framework...
 ```
+
+## Storage
+
+Each Qdrant point stores:
+- `question` — the generated hypothetical question
+- `chunk_id` — unique chunk identifier
+- `note_path` — absolute file path
+- `note_title` — file title
+- `file_type` — file extension
+- `section` — leaf section heading
+- `section_hierarchy` — full heading path
+- `start_line`, `end_line` — line range in the file (0-indexed)
+- `chunk_index`, `total_chunks_in_section`
+- `tags` — frontmatter tags
+
+No chunk text is stored in Qdrant. Text is read from disk at query time using the line range.

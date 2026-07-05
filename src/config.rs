@@ -15,6 +15,7 @@ pub struct Config {
 pub struct ChunkingConfig {
     pub max_chunk_words: usize,
     pub parallelism: usize,
+    pub max_file_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +61,7 @@ impl Default for Config {
                 base_url: String::new(),
                 api_key: String::new(),
             },
-            chunking: ChunkingConfig { max_chunk_words: 512, parallelism: 4 },
+            chunking: ChunkingConfig { max_chunk_words: 512, parallelism: 4, max_file_bytes: 100_000 },
             qdrant: QdrantConfig {
                 host: "localhost".to_string(),
                 grpc_port: 6339,
@@ -132,6 +133,7 @@ impl Config {
             "llm.base_url" => Ok(self.llm.base_url.clone()),
             "llm.api_key" => Ok(self.llm.api_key.clone()),
             "chunking.max_chunk_words" => Ok(self.chunking.max_chunk_words.to_string()),
+            "chunking.max_file_bytes" => Ok(self.chunking.max_file_bytes.to_string()),
             "chunking.parallelism" => Ok(self.chunking.parallelism.to_string()),
             "qdrant.host" => Ok(self.qdrant.host.clone()),
             "qdrant.grpc_port" => Ok(self.qdrant.grpc_port.to_string()),
@@ -157,6 +159,7 @@ impl Config {
             "llm.base_url" => self.llm.base_url = value.to_string(),
             "llm.api_key" => self.llm.api_key = value.to_string(),
             "chunking.max_chunk_words" => self.chunking.max_chunk_words = value.parse()?,
+            "chunking.max_file_bytes" => self.chunking.max_file_bytes = value.parse()?,
             "chunking.parallelism" => self.chunking.parallelism = value.parse()?,
             "qdrant.host" => self.qdrant.host = value.to_string(),
             "qdrant.grpc_port" => self.qdrant.grpc_port = value.parse()?,

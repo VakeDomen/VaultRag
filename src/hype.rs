@@ -8,9 +8,9 @@ impl HyPEGenerator {
     /// Generate hypothetical questions for a single chunk.
     pub async fn generate(config: &Config, text: &str) -> Result<Vec<String>> {
         let prompt = format!(
-            "Analyze the passage below and generate standalone hypothetical user questions that this passage could answer.
+            "Analyze the passage below and generate standalone hypothetical user questions of which the answer can be found in the passage.
 
-            The questions should be useful for retrieval in a RAG system. They should cover the passage exhaustively while avoiding duplicates.
+            The questions should be useful for retrieval in a RAG system. They should cover the passage exhaustively.
 
             Rules:
 

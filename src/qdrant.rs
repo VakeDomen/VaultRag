@@ -192,7 +192,7 @@ pub async fn upsert_chunks(
             ("chunk_id".to_string(), chunk.chunk_id.clone().into()),
             ("note_path".to_string(), chunk.note_path.clone().into()),
             ("note_title".to_string(), chunk.note_title.clone().into()),
-            ("text".to_string(), chunk.text.clone().into()),
+            ("file_type".to_string(), chunk.file_type.clone().into()),
             ("chunk_index".to_string(), (chunk.chunk_index as f64).into()),
             (
                 "total_chunks_in_section".to_string(),

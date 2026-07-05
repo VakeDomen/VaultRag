@@ -11,6 +11,7 @@ pub struct Chunk {
     pub total_chunks_in_section: usize,
     pub text: String,
     pub tags: Vec<String>,
+    pub file_type: String,
 }
 
 pub fn chunk_file(path: &str, max_chunk_words: usize) -> Result<Vec<Chunk>> {
@@ -18,6 +19,10 @@ pub fn chunk_file(path: &str, max_chunk_words: usize) -> Result<Vec<Chunk>> {
     let (frontmatter_tags, body) = parse_frontmatter(&content);
     let note_path = path.to_string();
     let note_title = extract_title(&body, path);
+    let file_type = std::path::Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
 
     let chunks = split_hierarchical(body, max_chunk_words);
 
@@ -39,6 +44,7 @@ pub fn chunk_file(path: &str, max_chunk_words: usize) -> Result<Vec<Chunk>> {
             total_chunks_in_section: total,
             text: text.clone(),
             tags: frontmatter_tags.clone(),
+            file_type: file_type.clone(),
         });
     }
 
@@ -106,78 +112,96 @@ fn extract_title(body: &str, path: &str) -> String {
 
 fn split_hierarchical(body: &str, max_words: usize) -> Vec<(Option<String>, String)> {
     let mut result = Vec::new();
-    let mut current_h2: Option<String> = None;
-    let mut current_h3: Option<String> = None;
-    let mut buffer = Vec::new();
-
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("## ") && !trimmed.starts_with("### ") {
-            flush_buffer(&mut buffer, &current_h2, &current_h3, max_words, &mut result);
-            current_h2 = Some(trimmed[3..].trim().to_string());
-            current_h3 = None;
-        } else if trimmed.starts_with("### ") {
-            flush_buffer(&mut buffer, &current_h2, &current_h3, max_words, &mut result);
-            current_h3 = Some(trimmed[4..].trim().to_string());
-        } else {
-            buffer.push(line);
-        }
-    }
-    flush_buffer(&mut buffer, &current_h2, &current_h3, max_words, &mut result);
-
+    split_recursive(body, None, max_words, &mut result);
     if result.is_empty() {
         result.push((None, body.to_string()));
     }
-
     result
 }
 
-fn flush_buffer(
-    buffer: &mut Vec<&str>,
-    h2: &Option<String>,
-    h3: &Option<String>,
+fn split_recursive(
+    text: &str,
+    section: Option<String>,
     max_words: usize,
     result: &mut Vec<(Option<String>, String)>,
 ) {
-    if buffer.is_empty() {
-        return;
-    }
-    let text = buffer.join("\n").trim().to_string();
-    buffer.clear();
+    let text = text.trim();
     if text.is_empty() {
         return;
     }
 
-    let section_name = h3.clone().or_else(|| h2.clone());
-
-    if word_count(&text) <= max_words {
-        result.push((section_name, text));
+    if word_count(text) <= max_words {
+        result.push((section, text.to_string()));
         return;
     }
 
-    // Still too big — split by paragraphs
+    // Try splitting by ## headings
+    let h2_sections = split_by_heading(text, "## ");
+    if h2_sections.len() > 1 {
+        for (heading, content) in h2_sections {
+            let sec = heading.or_else(|| section.clone());
+            split_recursive(&content, sec, max_words, result);
+        }
+        return;
+    }
+
+    // Try splitting by ### headings
+    let h3_sections = split_by_heading(text, "### ");
+    if h3_sections.len() > 1 {
+        for (heading, content) in h3_sections {
+            let sec = heading.or_else(|| section.clone());
+            split_recursive(&content, sec, max_words, result);
+        }
+        return;
+    }
+
+    // Split by paragraphs
     let paragraphs: Vec<&str> = text
         .split("\n\n")
         .map(|p| p.trim())
         .filter(|p| !p.is_empty())
         .collect();
 
-    if paragraphs.len() == 1 {
-        // Single paragraph too big — split by sentences
-        for chunk in split_by_sentences(&text, max_words) {
-            result.push((section_name.clone(), chunk));
-        }
-    } else {
+    if paragraphs.len() > 1 {
         for para in paragraphs {
-            if word_count(para) <= max_words {
-                result.push((section_name.clone(), para.to_string()));
-            } else {
-                for chunk in split_by_sentences(para, max_words) {
-                    result.push((section_name.clone(), chunk));
-                }
+            split_recursive(para, section.clone(), max_words, result);
+        }
+        return;
+    }
+
+    // Single paragraph — split by sentences
+    for chunk in split_by_sentences(text, max_words) {
+        result.push((section.clone(), chunk));
+    }
+}
+
+/// Split text into sections by a heading marker (e.g. "## " or "### ").
+/// Returns (heading_name, content_without_heading) for each section.
+/// Content before the first heading has heading_name = None.
+fn split_by_heading(text: &str, marker: &str) -> Vec<(Option<String>, String)> {
+    let mut sections = Vec::new();
+    let mut current_heading: Option<String> = None;
+    let mut current_lines: Vec<&str> = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(marker) {
+            // Flush current section
+            if !current_lines.is_empty() {
+                sections.push((current_heading.take(), current_lines.join("\n")));
+                current_lines = Vec::new();
             }
+            current_heading = Some(trimmed[marker.len()..].trim().to_string());
+        } else {
+            current_lines.push(line);
         }
     }
+
+    if !current_lines.is_empty() {
+        sections.push((current_heading.take(), current_lines.join("\n")));
+    }
+
+    sections
 }
 
 fn word_count(text: &str) -> usize {

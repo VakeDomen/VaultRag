@@ -1,5 +1,8 @@
+mod chunker;
 mod cli;
 mod config;
+mod embed;
+mod hype;
 mod index;
 mod qdrant;
 
@@ -38,6 +41,12 @@ async fn main() -> Result<()> {
             ConfigAction::List => {
                 for key in [
                     "vault.path",
+                    "llm.provider",
+                    "llm.model",
+                    "llm.base_url",
+                    "llm.api_key",
+                    "chunking.max_chunk_words",
+                    "chunking.parallelism",
                     "qdrant.host",
                     "qdrant.grpc_port",
                     "qdrant.rest_port",
@@ -45,7 +54,10 @@ async fn main() -> Result<()> {
                     "qdrant.docker_container_name",
                     "qdrant.docker_volume_name",
                     "qdrant.docker_image",
+                    "embedding.provider",
                     "embedding.model",
+                    "embedding.base_url",
+                    "embedding.api_key",
                     "embedding.dimension",
                 ] {
                     println!("{} = {}", key, config.get(key)?);

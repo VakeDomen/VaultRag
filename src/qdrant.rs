@@ -1,9 +1,14 @@
+use crate::chunker::Chunk;
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
+use qdrant_client::config::QdrantConfig;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, Distance, VectorParamsBuilder,
+    point_id, CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId,
+    PointStruct, UpsertPointsBuilder, VectorParamsBuilder,
 };
 use qdrant_client::Qdrant;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::process::Command;
 use std::time::Duration;
 
@@ -22,7 +27,8 @@ pub async fn ensure_qdrant(config: &Config) -> Result<Qdrant> {
 /// Connect to a running Qdrant instance.
 pub async fn connect(config: &Config) -> Result<Qdrant> {
     let url = format!("http://{}:{}", config.qdrant.host, config.qdrant.grpc_port);
-    let client = Qdrant::from_url(&url)
+    let client = QdrantConfig::from_url(&url)
+        .skip_compatibility_check()
         .build()
         .with_context(|| format!("failed to connect to Qdrant at {url}"))?;
     Ok(client)
@@ -161,6 +167,89 @@ async fn ensure_collection(config: &Config, client: &Qdrant) -> Result<()> {
     client.create_collection(request).await?;
 
     println!("Collection '{}' created.", collection_name);
+    Ok(())
+}
+
+/// Upsert HyPE-generated vectors with their chunk payloads.
+/// Each chunk produces multiple vectors (one per hypothetical question).
+pub async fn upsert_chunks(
+    client: &Qdrant,
+    config: &Config,
+    points: Vec<(Vec<f32>, Chunk)>,
+) -> Result<()> {
+    let collection_name = &config.qdrant.collection_name;
+    let mut point_structs = Vec::with_capacity(points.len());
+
+    for (i, (vector, chunk)) in points.iter().enumerate() {
+        let mut hasher = DefaultHasher::new();
+        chunk.chunk_id.hash(&mut hasher);
+        i.hash(&mut hasher);
+        let point_id = PointId {
+            point_id_options: Some(point_id::PointIdOptions::Num(hasher.finish())),
+        };
+
+        let payload: std::collections::HashMap<String, qdrant_client::qdrant::Value> = [
+            ("chunk_id".to_string(), chunk.chunk_id.clone().into()),
+            ("note_path".to_string(), chunk.note_path.clone().into()),
+            ("note_title".to_string(), chunk.note_title.clone().into()),
+            ("text".to_string(), chunk.text.clone().into()),
+            ("chunk_index".to_string(), (chunk.chunk_index as f64).into()),
+            (
+                "total_chunks_in_section".to_string(),
+                (chunk.total_chunks_in_section as f64).into(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut payload = payload;
+        if let Some(section) = &chunk.section {
+            payload.insert("section".to_string(), section.clone().into());
+        }
+        if !chunk.tags.is_empty() {
+            payload.insert(
+                "tags".to_string(),
+                qdrant_client::qdrant::Value {
+                    kind: Some(qdrant_client::qdrant::value::Kind::ListValue(
+                        qdrant_client::qdrant::ListValue {
+                            values: chunk
+                                .tags
+                                .iter()
+                                .map(|t| qdrant_client::qdrant::Value {
+                                    kind: Some(
+                                        qdrant_client::qdrant::value::Kind::StringValue(
+                                            t.clone(),
+                                        ),
+                                    ),
+                                })
+                                .collect(),
+                        },
+                    )),
+                },
+            );
+        }
+
+        point_structs.push(PointStruct::new(point_id, vector.clone(), payload));
+    }
+
+    client
+        .upsert_points(UpsertPointsBuilder::new(collection_name, point_structs))
+        .await
+        .context("failed to upsert points")?;
+
+    Ok(())
+}
+
+/// Delete all points from the collection.
+pub async fn clear_collection(config: &Config, client: &Qdrant) -> Result<()> {
+    let collection_name = &config.qdrant.collection_name;
+    client
+        .delete_points(
+            DeletePointsBuilder::new(collection_name)
+                .points(Filter::default()),
+        )
+        .await
+        .with_context(|| format!("failed to clear collection '{}'", collection_name))?;
     Ok(())
 }
 

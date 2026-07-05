@@ -5,8 +5,24 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub vault: VaultConfig,
+    pub llm: LlmConfig,
+    pub chunking: ChunkingConfig,
     pub qdrant: QdrantConfig,
     pub embedding: EmbeddingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkingConfig {
+    pub max_chunk_words: usize,
+    pub parallelism: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmConfig {
+    pub provider: String,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +43,10 @@ pub struct QdrantConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
+    pub provider: String,
     pub model: String,
+    pub base_url: String,
+    pub api_key: String,
     pub dimension: u64,
 }
 
@@ -35,6 +54,13 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             vault: VaultConfig { path: None },
+            llm: LlmConfig {
+                provider: "ollama".to_string(),
+                model: "qwen3:0.6b".to_string(),
+                base_url: String::new(),
+                api_key: String::new(),
+            },
+            chunking: ChunkingConfig { max_chunk_words: 512, parallelism: 4 },
             qdrant: QdrantConfig {
                 host: "localhost".to_string(),
                 grpc_port: 6339,
@@ -45,8 +71,11 @@ impl Default for Config {
                 docker_image: "qdrant/qdrant:latest".to_string(),
             },
             embedding: EmbeddingConfig {
-                model: "all-MiniLM-L6-v2".to_string(),
-                dimension: 384,
+                provider: "ollama".to_string(),
+                model: "bge-m3".to_string(),
+                base_url: String::new(),
+                api_key: String::new(),
+                dimension: 1024,
             },
         }
     }
@@ -98,6 +127,12 @@ impl Config {
     pub fn get(&self, key: &str) -> Result<String> {
         match key {
             "vault.path" => Ok(self.vault.path.clone().unwrap_or_default()),
+            "llm.provider" => Ok(self.llm.provider.clone()),
+            "llm.model" => Ok(self.llm.model.clone()),
+            "llm.base_url" => Ok(self.llm.base_url.clone()),
+            "llm.api_key" => Ok(self.llm.api_key.clone()),
+            "chunking.max_chunk_words" => Ok(self.chunking.max_chunk_words.to_string()),
+            "chunking.parallelism" => Ok(self.chunking.parallelism.to_string()),
             "qdrant.host" => Ok(self.qdrant.host.clone()),
             "qdrant.grpc_port" => Ok(self.qdrant.grpc_port.to_string()),
             "qdrant.rest_port" => Ok(self.qdrant.rest_port.to_string()),
@@ -105,7 +140,10 @@ impl Config {
             "qdrant.docker_container_name" => Ok(self.qdrant.docker_container_name.clone()),
             "qdrant.docker_volume_name" => Ok(self.qdrant.docker_volume_name.clone()),
             "qdrant.docker_image" => Ok(self.qdrant.docker_image.clone()),
+            "embedding.provider" => Ok(self.embedding.provider.clone()),
             "embedding.model" => Ok(self.embedding.model.clone()),
+            "embedding.base_url" => Ok(self.embedding.base_url.clone()),
+            "embedding.api_key" => Ok(self.embedding.api_key.clone()),
             "embedding.dimension" => Ok(self.embedding.dimension.to_string()),
             _ => bail!("unknown config key: {key}"),
         }
@@ -114,6 +152,12 @@ impl Config {
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "vault.path" => self.vault.path = Some(value.to_string()),
+            "llm.provider" => self.llm.provider = value.to_string(),
+            "llm.model" => self.llm.model = value.to_string(),
+            "llm.base_url" => self.llm.base_url = value.to_string(),
+            "llm.api_key" => self.llm.api_key = value.to_string(),
+            "chunking.max_chunk_words" => self.chunking.max_chunk_words = value.parse()?,
+            "chunking.parallelism" => self.chunking.parallelism = value.parse()?,
             "qdrant.host" => self.qdrant.host = value.to_string(),
             "qdrant.grpc_port" => self.qdrant.grpc_port = value.parse()?,
             "qdrant.rest_port" => self.qdrant.rest_port = value.parse()?,
@@ -121,7 +165,10 @@ impl Config {
             "qdrant.docker_container_name" => self.qdrant.docker_container_name = value.to_string(),
             "qdrant.docker_volume_name" => self.qdrant.docker_volume_name = value.to_string(),
             "qdrant.docker_image" => self.qdrant.docker_image = value.to_string(),
+            "embedding.provider" => self.embedding.provider = value.to_string(),
             "embedding.model" => self.embedding.model = value.to_string(),
+            "embedding.base_url" => self.embedding.base_url = value.to_string(),
+            "embedding.api_key" => self.embedding.api_key = value.to_string(),
             "embedding.dimension" => self.embedding.dimension = value.parse()?,
             _ => bail!("unknown config key: {key}"),
         }

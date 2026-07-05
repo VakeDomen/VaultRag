@@ -1,23 +1,89 @@
+use crate::chunker;
 use crate::config::Config;
+use crate::embed::Embedder;
+use crate::hype::HyPEGenerator;
+use crate::qdrant;
 use anyhow::{bail, Context, Result};
 use qdrant_client::qdrant::CountPointsBuilder;
 use qdrant_client::Qdrant;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use walkdir::WalkDir;
 
-/// Validate vault, discover files, check collection state, then index.
 pub async fn index(config: &Config, vault_path: &str, client: &Qdrant) -> Result<()> {
     validate_vault_path(vault_path)?;
-
     let files = discover_md_files(vault_path)?;
-
     check_collection_state(config, client).await?;
 
-    println!("Found {} markdown files to index.", files.len());
-    // TODO: chunking, embedding, upsert
+    println!("Chunking and indexing {} files...", files.len());
+
+    let semaphore = Arc::new(Semaphore::new(config.chunking.parallelism));
+    let config = Arc::new(config.clone());
+    let client = client.clone();
+
+    let mut handles = Vec::new();
+
+    for file_path in files {
+        let permit = semaphore.clone().acquire_owned().await;
+        let config = config.clone();
+        let client = client.clone();
+
+        handles.push(tokio::spawn(async move {
+            let _permit = permit;
+            let result = process_file(&config, &client, &file_path).await;
+            (file_path, result)
+        }));
+    }
+
+    for handle in handles {
+        let (_file_path, result) = handle.await?;
+        if let Err(e) = result {
+            eprintln!("  error — {e:#}");
+        }
+    }
+
+    println!();
+    println!("Done.");
 
     Ok(())
+}
+
+async fn process_file(
+    config: &Config,
+    client: &Qdrant,
+    file_path: &str,
+) -> Result<(usize, usize)> {
+    let chunks = chunker::chunk_file(file_path, config.chunking.max_chunk_words)
+        .context("failed to chunk file")?;
+
+    if chunks.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let mut all_points = Vec::new();
+
+    for chunk in &chunks {
+        let questions = HyPEGenerator::generate(config, &chunk.text).await?;
+        let refs: Vec<&str> = questions.iter().map(|s| s.as_str()).collect();
+        let embeddings = Embedder::embed_batch(config, &refs).await?;
+
+        for embedding in embeddings {
+            all_points.push((embedding, chunk.clone()));
+        }
+    }
+
+    let total_questions = all_points.len();
+    qdrant::upsert_chunks(client, config, all_points).await?;
+
+    let name = Path::new(file_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    println!("  {name}: {} chunks, {total_questions} questions", chunks.len());
+
+    Ok((chunks.len(), total_questions))
 }
 
 fn validate_vault_path(vault_path: &str) -> Result<()> {
@@ -30,11 +96,9 @@ fn validate_vault_path(vault_path: &str) -> Result<()> {
         bail!("vault path is not a directory: {vault_path}");
     }
 
-    // Check readability
     path.read_dir()
         .with_context(|| format!("permission denied reading vault: {vault_path}"))?;
 
-    // Warn if .obsidian is missing
     if !path.join(".obsidian").exists() {
         eprintln!("warning: no .obsidian directory found — are you sure this is an Obsidian vault?");
     }
@@ -49,7 +113,6 @@ fn discover_md_files(vault_path: &str) -> Result<Vec<String>> {
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
-            // Skip hidden directories (except the vault root itself)
             if e.depth() == 0 {
                 return true;
             }
@@ -111,6 +174,9 @@ async fn check_collection_state(config: &Config, client: &Qdrant) -> Result<()> 
             println!("Aborting.");
             std::process::exit(0);
         }
+
+        qdrant::clear_collection(config, client).await?;
+        println!("Cleared existing points.");
     }
 
     Ok(())

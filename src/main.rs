@@ -2,15 +2,15 @@ mod cli;
 mod config;
 mod qdrant;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::Parser;
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, ConfigAction};
 use config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = Config::load()?;
+    let mut config = Config::load()?;
 
     match cli.command {
         Commands::Init => {
@@ -19,11 +19,13 @@ async fn main() -> Result<()> {
             println!("Ready.");
         }
         Commands::Index { path } => {
+            let vault_path = resolve_vault_path(&config, path)?;
             let _client = qdrant::ensure_qdrant(&config).await?;
-            println!("Indexing vault at {}...", path);
+            println!("Indexing vault at {}...", vault_path);
             // TODO: implement indexing
         }
-        Commands::Query { query, n } => {
+        Commands::Query { query, n, path } => {
+            let _vault_path = resolve_vault_path(&config, path)?;
             let _client = qdrant::ensure_qdrant(&config).await?;
             println!("Querying: {} (top {})", query, n);
             // TODO: implement query
@@ -32,10 +34,57 @@ async fn main() -> Result<()> {
             qdrant::teardown(&config)?;
             println!("Done.");
         }
-        Commands::ConfigPath => {
-            println!("{}", Config::config_path()?.display());
-        }
+        Commands::Config { action } => match action {
+            ConfigAction::List => {
+                for key in [
+                    "vault.path",
+                    "qdrant.host",
+                    "qdrant.grpc_port",
+                    "qdrant.rest_port",
+                    "qdrant.collection_name",
+                    "qdrant.docker_container_name",
+                    "qdrant.docker_volume_name",
+                    "qdrant.docker_image",
+                    "embedding.model",
+                    "embedding.dimension",
+                ] {
+                    println!("{} = {}", key, config.get(key)?);
+                }
+            }
+            ConfigAction::Get { key } => match key {
+                Some(k) => println!("{}", config.get(&k)?),
+                None => println!(
+                    "{}",
+                    toml::to_string_pretty(&config)
+                        .context("failed to serialize config")?
+                ),
+            },
+            ConfigAction::Set { key, value } => {
+                let value = if key == "vault.path" {
+                    std::path::Path::new(&value)
+                        .canonicalize()
+                        .context("invalid vault path")?
+                        .to_string_lossy()
+                        .to_string()
+                } else {
+                    value
+                };
+                config.set(&key, &value)?;
+                config.save()?;
+                println!("Set {} = {}", key, value);
+            }
+        },
     }
 
     Ok(())
+}
+
+fn resolve_vault_path(config: &Config, cli_path: Option<String>) -> Result<String> {
+    if let Some(p) = cli_path {
+        return Ok(p);
+    }
+    if let Some(p) = &config.vault.path {
+        return Ok(p.clone());
+    }
+    bail!("no vault path set. Use --path or 'vaultrag config set vault.path <path>'")
 }

@@ -193,6 +193,7 @@ pub async fn upsert_chunks(
             ("note_path".to_string(), chunk.note_path.clone().into()),
             ("note_title".to_string(), chunk.note_title.clone().into()),
             ("file_type".to_string(), chunk.file_type.clone().into()),
+            ("text".to_string(), chunk.text.clone().into()),
             ("chunk_index".to_string(), (chunk.chunk_index as f64).into()),
             (
                 "total_chunks_in_section".to_string(),
@@ -299,6 +300,14 @@ pub fn teardown(config: &Config) -> Result<()> {
         .args(["volume", "rm", volume.as_str()])
         .status()
         .context("failed to remove volume")?;
+
+    let hash_path = Config::config_dir().ok().map(|d| d.join("hash_tree.json"));
+    if let Some(p) = hash_path {
+        if p.exists() {
+            println!("Removing hash tree...");
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 
     Ok(())
 }

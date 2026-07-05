@@ -12,6 +12,21 @@ fn get_str<'a>(p: &'a qdrant_client::qdrant::ScoredPoint, key: &str) -> &'a str 
         .unwrap_or("")
 }
 
+fn extract_snippet(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    // Try to cut at a sentence boundary
+    let truncated = &text[..max_chars];
+    if let Some(last_period) = truncated.rfind('.') {
+        if last_period > max_chars / 2 {
+            return format!("{}...", &truncated[..=last_period].trim());
+        }
+    }
+    format!("{}...", truncated.trim())
+}
+
 pub async fn query(
     config: &Config,
     vault_path: &str,
@@ -32,11 +47,12 @@ pub async fn query(
             .to_string_lossy();
 
         let title = get_str(p, "note_title");
-        let section = get_str(p, "section");
-        let section = if section.is_empty() { "__root__" } else { section };
+        let text = get_str(p, "text");
+        let snippet = extract_snippet(text, 200);
 
         println!("{:.2}  {}", p.score, title);
-        println!("      {}  \u{bb}  {}", rel_path, section);
+        println!("      {}", rel_path);
+        println!("      \u{2192} {}", snippet);
         println!();
     }
 

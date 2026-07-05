@@ -6,6 +6,7 @@ mod hash_tree;
 mod hype;
 mod index;
 mod qdrant;
+mod query;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -28,11 +29,10 @@ async fn main() -> Result<()> {
             let client = qdrant::ensure_qdrant(&config).await?;
             index::index(&config, &vault_path, &client).await?;
         }
-        Commands::Query { query, n, path } => {
-            let _vault_path = resolve_vault_path(&config, path)?;
-            let _client = qdrant::ensure_qdrant(&config).await?;
-            println!("Querying: {} (top {})", query, n);
-            // TODO: implement query
+        Commands::Query { query, n } => {
+            let vault_path = resolve_vault_path(&config, None)?;
+            let client = qdrant::ensure_qdrant(&config).await?;
+            query::query(&config, &vault_path, &client, &query, n).await?;
         }
         Commands::Teardown => {
             qdrant::teardown(&config)?;

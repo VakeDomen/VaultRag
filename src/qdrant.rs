@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use qdrant_client::config::QdrantConfig;
 use qdrant_client::qdrant::{
     point_id, Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId,
-    PointStruct, UpsertPointsBuilder, VectorParamsBuilder,
+    PointStruct, ScoredPoint, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
 };
 use qdrant_client::Qdrant;
 use std::collections::hash_map::DefaultHasher;
@@ -238,6 +238,21 @@ pub async fn upsert_chunks(
         .context("failed to upsert points")?;
 
     Ok(())
+}
+
+/// Search the collection by vector similarity.
+pub async fn search(
+    client: &Qdrant,
+    config: &Config,
+    vector: Vec<f32>,
+    limit: u64,
+) -> Result<Vec<ScoredPoint>> {
+    let collection_name = &config.qdrant.collection_name;
+    let results = client
+        .search_points(SearchPointsBuilder::new(collection_name, vector, limit).with_payload(true))
+        .await
+        .context("failed to search points")?;
+    Ok(results.result)
 }
 
 /// Delete all points from the collection.

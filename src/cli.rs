@@ -21,17 +21,12 @@ pub enum Commands {
 
     /// Query the indexed vault
     Query {
-        /// The query string
-        #[arg(short, long)]
+        /// The query string (positional)
         query: String,
 
         /// Number of results to return
         #[arg(short, long, default_value = "5")]
         n: usize,
-
-        /// Path to the Obsidian vault (overrides config)
-        #[arg(short, long)]
-        path: Option<String>,
     },
 
     /// Tear down the Qdrant container and volume

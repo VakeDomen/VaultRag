@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod index;
 mod qdrant;
 
 use anyhow::{bail, Context, Result};
@@ -20,9 +21,8 @@ async fn main() -> Result<()> {
         }
         Commands::Index { path } => {
             let vault_path = resolve_vault_path(&config, path)?;
-            let _client = qdrant::ensure_qdrant(&config).await?;
-            println!("Indexing vault at {}...", vault_path);
-            // TODO: implement indexing
+            let client = qdrant::ensure_qdrant(&config).await?;
+            index::index(&config, &vault_path, &client).await?;
         }
         Commands::Query { query, n, path } => {
             let _vault_path = resolve_vault_path(&config, path)?;

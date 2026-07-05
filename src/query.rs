@@ -1,15 +1,20 @@
 use crate::config::Config;
 use crate::embed::Embedder;
 use crate::qdrant;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use qdrant_client::Qdrant;
 use std::collections::BTreeMap;
+use std::fs;
 
 fn get_str<'a>(p: &'a qdrant_client::qdrant::ScoredPoint, key: &str) -> &'a str {
     p.get(key)
         .as_str()
         .map(|s| s.as_str())
         .unwrap_or("")
+}
+
+fn get_f64(p: &qdrant_client::qdrant::ScoredPoint, key: &str) -> Option<f64> {
+    p.get(key).as_double()
 }
 
 fn extract_snippet(text: &str, max_chars: usize) -> String {
@@ -24,6 +29,17 @@ fn extract_snippet(text: &str, max_chars: usize) -> String {
         }
     }
     format!("{}...", truncated.trim())
+}
+
+fn read_lines(path: &str, start: usize, end: usize) -> Result<String> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let end = end.min(lines.len().saturating_sub(1));
+    if start > end {
+        return Ok(String::new());
+    }
+    Ok(lines[start..=end].join("\n"))
 }
 
 // ANSI color helpers
@@ -78,21 +94,28 @@ pub async fn query(
 
         let score_pct = (file_score * 100.0) as u8;
 
-        println!("{bold}{title}{r}  {d}──{r}  {g}{score_pct}% match{r}",
-            bold = c::BOLD, title = title, r = c::RESET, d = c::DIM, g = c::GREEN, score_pct = score_pct);
-        println!("  {d}{}{r}", file_path, d = c::DIM, r = c::RESET);
+        println!("{}{}{}  {}──{}  {}{}% match{}",
+            c::BOLD, title, c::RESET, c::DIM, c::RESET, c::GREEN, score_pct, c::RESET);
+        println!("  {}{}{}", c::DIM, file_path, c::RESET);
         println!();
 
         for (j, p) in files[file_path].iter().enumerate() {
             if j > 0 {
-                println!("  {d}──{r}", d = c::DIM, r = c::RESET);
+                println!("  {}──{}", c::DIM, c::RESET);
             }
-            let text = get_str(p, "text");
-            let snippet = extract_snippet(text, 300);
+
             let section = get_str(p, "section");
             let section = if section.is_empty() { "__root__" } else { section };
 
-            println!("  {cyan}[{section}]{r}", cyan = c::CYAN, section = section, r = c::RESET);
+            let note_path = get_str(p, "note_path");
+            let start = get_f64(p, "start_line").unwrap_or(0.0) as usize;
+            let end = get_f64(p, "end_line").unwrap_or(0.0) as usize;
+            let chunk_text = read_lines(note_path, start, end).unwrap_or_default();
+            let snippet = extract_snippet(&chunk_text, 300);
+
+            println!("  {}[{}]{}  {}L{}-L{}{}",
+                c::CYAN, section, c::RESET,
+                c::DIM, start + 1, end + 1, c::RESET);
             println!("  {}", snippet);
         }
     }

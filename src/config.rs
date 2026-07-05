@@ -9,6 +9,7 @@ pub struct Config {
     pub chunking: ChunkingConfig,
     pub qdrant: QdrantConfig,
     pub embedding: EmbeddingConfig,
+    pub bm25: Bm25Config,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +52,11 @@ pub struct EmbeddingConfig {
     pub dimension: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bm25Config {
+    pub enabled: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -77,6 +83,9 @@ impl Default for Config {
                 base_url: String::new(),
                 api_key: String::new(),
                 dimension: 1024,
+            },
+            bm25: Bm25Config {
+                enabled: true,
             },
         }
     }
@@ -147,6 +156,7 @@ impl Config {
             "embedding.base_url" => Ok(self.embedding.base_url.clone()),
             "embedding.api_key" => Ok(self.embedding.api_key.clone()),
             "embedding.dimension" => Ok(self.embedding.dimension.to_string()),
+            "bm25.enabled" => Ok(self.bm25.enabled.to_string()),
             _ => bail!("unknown config key: {key}"),
         }
     }
@@ -173,6 +183,7 @@ impl Config {
             "embedding.base_url" => self.embedding.base_url = value.to_string(),
             "embedding.api_key" => self.embedding.api_key = value.to_string(),
             "embedding.dimension" => self.embedding.dimension = value.parse()?,
+            "bm25.enabled" => self.bm25.enabled = value.parse()?,
             _ => bail!("unknown config key: {key}"),
         }
         Ok(())

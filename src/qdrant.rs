@@ -1,13 +1,17 @@
 use crate::chunker::Chunk;
 use crate::config::Config;
+use crate::sparse_bm25;
 use anyhow::{bail, Context, Result};
 use qdrant_client::config::QdrantConfig;
 use qdrant_client::qdrant::{
-    point_id, Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId,
-    PointStruct, ScoredPoint, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
+    point_id, vectors_config, Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance,
+    Filter, Fusion, Modifier, PointId, PointStruct, PrefetchQueryBuilder, Query,
+    QueryPointsBuilder, ScoredPoint, SparseVectorParamsBuilder, SparseVectorsConfigBuilder,
+    UpsertPointsBuilder, VectorParamsBuilder, VectorsConfig,
 };
 use qdrant_client::Qdrant;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::process::Command;
 use std::time::Duration;
@@ -158,11 +162,26 @@ async fn ensure_collection(config: &Config, client: &Qdrant) -> Result<()> {
 
     println!("Creating collection '{}'...", collection_name);
 
+    let mut vectors = std::collections::HashMap::new();
+    vectors.insert(
+        "dense".to_string(),
+        VectorParamsBuilder::new(config.embedding.dimension, Distance::Cosine).build(),
+    );
+    let vectors_config = VectorsConfig {
+        config: Some(vectors_config::Config::ParamsMap(
+            qdrant_client::qdrant::VectorParamsMap { map: vectors },
+        )),
+    };
+
+    let mut sparse = SparseVectorsConfigBuilder::default();
+    sparse.add_named_vector_params(
+        "chunk_bm25",
+        SparseVectorParamsBuilder::default().modifier(Modifier::Idf),
+    );
+
     let request = CreateCollectionBuilder::new(collection_name)
-        .vectors_config(VectorParamsBuilder::new(
-            config.embedding.dimension,
-            Distance::Cosine,
-        ));
+        .vectors_config(vectors_config)
+        .sparse_vectors_config(sparse);
 
     client.create_collection(request).await?;
 
@@ -172,6 +191,8 @@ async fn ensure_collection(config: &Config, client: &Qdrant) -> Result<()> {
 
 /// Upsert HyPE-generated vectors with their chunk payloads.
 /// Each chunk produces multiple vectors (one per hypothetical question).
+/// Each point stores both a dense vector (the embedding) and a client-side
+/// computed BM25 sparse vector (term frequencies hashed to u32 indices).
 pub async fn upsert_chunks(
     client: &Qdrant,
     config: &Config,
@@ -180,7 +201,7 @@ pub async fn upsert_chunks(
     let collection_name = &config.qdrant.collection_name;
     let mut point_structs = Vec::with_capacity(points.len());
 
-    for (i, (vector, question, chunk)) in points.iter().enumerate() {
+    for (i, (dense_vector, question, chunk)) in points.iter().enumerate() {
         let mut hasher = DefaultHasher::new();
         chunk.chunk_id.hash(&mut hasher);
         i.hash(&mut hasher);
@@ -188,7 +209,7 @@ pub async fn upsert_chunks(
             point_id_options: Some(point_id::PointIdOptions::Num(hasher.finish())),
         };
 
-        let payload: std::collections::HashMap<String, qdrant_client::qdrant::Value> = [
+        let payload: HashMap<String, qdrant_client::qdrant::Value> = [
             ("chunk_id".to_string(), chunk.chunk_id.clone().into()),
             ("note_path".to_string(), chunk.note_path.clone().into()),
             ("note_title".to_string(), chunk.note_title.clone().into()),
@@ -254,7 +275,18 @@ pub async fn upsert_chunks(
             );
         }
 
-        point_structs.push(PointStruct::new(point_id, vector.clone(), payload));
+        // Build named vectors: dense embedding + BM25 sparse vector
+        let mut named: HashMap<String, qdrant_client::qdrant::Vector> = HashMap::new();
+        named.insert("dense".to_string(), dense_vector.as_slice().into());
+        if config.bm25.enabled {
+            let sparse = sparse_bm25::compute_sparse_vector(&chunk.text);
+            named.insert(
+                "chunk_bm25".to_string(),
+                sparse.as_slice().into(),
+            );
+        }
+
+        point_structs.push(PointStruct::new(point_id, named, payload));
     }
 
     client
@@ -265,7 +297,7 @@ pub async fn upsert_chunks(
     Ok(())
 }
 
-/// Search the collection by vector similarity.
+/// Search the collection by dense vector similarity.
 pub async fn search(
     client: &Qdrant,
     config: &Config,
@@ -274,10 +306,51 @@ pub async fn search(
 ) -> Result<Vec<ScoredPoint>> {
     let collection_name = &config.qdrant.collection_name;
     let results = client
-        .search_points(SearchPointsBuilder::new(collection_name, vector, limit).with_payload(true))
+        .query(
+            QueryPointsBuilder::new(collection_name)
+                .query(Query::new_nearest(vector))
+                .using("dense")
+                .limit(limit)
+                .with_payload(true),
+        )
         .await
         .context("failed to search points")?;
     Ok(results.result)
+}
+
+/// Hybrid search: fuse dense vector similarity with BM25 lexical search via RRF.
+pub async fn hybrid_search(
+    client: &Qdrant,
+    config: &Config,
+    dense_vector: Vec<f32>,
+    query_text: &str,
+    limit: u64,
+) -> Result<Vec<ScoredPoint>> {
+    let collection_name = &config.qdrant.collection_name;
+    let query_sparse = sparse_bm25::compute_sparse_vector(query_text);
+
+    let dense_prefetch = PrefetchQueryBuilder::default()
+        .query(Query::new_nearest(dense_vector))
+        .using("dense")
+        .limit(limit * 2)
+        .build();
+
+    let bm25_prefetch = PrefetchQueryBuilder::default()
+        .query(Query::new_nearest(query_sparse.as_slice()))
+        .using("chunk_bm25")
+        .limit(limit * 2)
+        .build();
+
+    let request = QueryPointsBuilder::new(collection_name)
+        .add_prefetch(dense_prefetch)
+        .add_prefetch(bm25_prefetch)
+        .query(Query::new_fusion(Fusion::Rrf))
+        .limit(limit)
+        .with_payload(true)
+        .build();
+
+    let response = client.query(request).await?;
+    Ok(response.result)
 }
 
 /// Delete all points from the collection.

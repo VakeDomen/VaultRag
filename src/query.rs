@@ -60,7 +60,12 @@ pub async fn query(
 ) -> Result<()> {
     let fetch = (n * 10) as u64;
     let vector = Embedder::embed(config, query_text).await?;
-    let results = qdrant::search(client, config, vector, fetch).await?;
+
+    let results = if config.bm25.enabled {
+        qdrant::hybrid_search(client, config, vector, query_text, fetch).await?
+    } else {
+        qdrant::search(client, config, vector, fetch).await?
+    };
 
     // Group by note_path, deduplicate by chunk_id (keep highest score)
     let mut files: BTreeMap<String, Vec<&qdrant_client::qdrant::ScoredPoint>> = BTreeMap::new();

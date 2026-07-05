@@ -7,6 +7,7 @@ mod hype;
 mod index;
 mod qdrant;
 mod query;
+mod sparse_bm25;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -61,6 +62,7 @@ async fn main() -> Result<()> {
                     "embedding.base_url",
                     "embedding.api_key",
                     "embedding.dimension",
+                    "bm25.enabled",
                 ] {
                     println!("{} = {}", key, config.get(key)?);
                 }

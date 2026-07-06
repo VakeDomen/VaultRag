@@ -1,8 +1,8 @@
 # VaultFind
 
-Semantic search over an Obsidian vault using **HyPE** (Hypothetical Prompt Embeddings). Each chunk of a markdown file is passed to an LLM which generates hypothetical questions a user might ask about that content. Those questions are embedded and stored in Qdrant. At query time, your query is embedded directly and matched against the question vectors — question-to-question search.
+Semantic + BM25 hybrid search over an Obsidian vault using **HyPE** (Hypothetical Prompt Embeddings). Each chunk of a markdown file is passed to an LLM which generates hypothetical questions a user might ask about that content. Those questions are embedded (dense vectors) and stored in Qdrant alongside client-computed BM25 sparse vectors. At query time, both searches run in parallel and are fused via Reciprocal Rank Fusion (RRF) — question-to-question semantic matching plus exact keyword retrieval.
 
-Only the LLM-generated questions and metadata (path, line range, section) are stored in Qdrant. The original text is read from disk at query time to produce snippets.
+Only the LLM-generated questions, BM25 sparse vectors, and metadata (path, line range, section) are stored in Qdrant. The original text is read from disk at query time to produce snippets.
 
 ## Quickstart
 
@@ -52,7 +52,7 @@ Arguments:
 - `query` (positional) — the search query
 - `-n` — number of file results (default: 5)
 
-Internally fetches `n × 10` candidates from Qdrant, deduplicates by `chunk_id`, groups by file, and returns the top `n` files with all their matching chunks.
+Internally fetches `n × 10` candidates from Qdrant via hybrid search (dense + BM25 sparse fused with RRF), deduplicates by `chunk_id`, groups by file, and returns the top `n` files with all their matching chunks.
 
 ### `vaultfind config`
 
@@ -65,6 +65,9 @@ vaultfind config get llm.model
 
 # Set a value
 vaultfind config set embedding.model bge-m3
+
+# Toggle BM25 hybrid search
+vaultfind config set bm25.enabled false
 ```
 
 ### `vaultfind teardown`
@@ -98,6 +101,9 @@ docker_container_name = "vaultfind-qdrant"
 docker_volume_name = "vaultfind_data"
 docker_image = "qdrant/qdrant:latest"
 
+[bm25]
+enabled = true
+
 [embedding]
 provider = "openai"
 model = "embeddinggemma"
@@ -126,9 +132,10 @@ Both LLM and embedding configs support `provider`, `base_url`, and `api_key`. Su
 ### Querying
 
 1. Embed the query string using the configured embedding model
-2. Search Qdrant (cosine similarity) — fetches `n × 10` candidates
-3. Deduplicate by `chunk_id`
-4. Group by file, take top `n` files
+2. If BM25 is enabled (default): run two prefetch queries in parallel — dense vector search (cosine similarity) and BM25 sparse vector search — fused via `Fusion::Rrf`
+3. If BM25 is disabled: fall back to dense vector search only
+4. Deduplicate by `chunk_id`
+5. Group by file, take top `n` files
 5. For each chunk, read the original text from disk using stored line range
 6. Print results with score, file path, section, question, and snippet
 
@@ -156,6 +163,12 @@ LeWorldModel (LeWM)  ──  78% match
   Q: How does JEPA relate to world models?
   - [[jepa]] — Joint Embedding Predictive Architecture framework...
 ```
+
+## Hybrid Search (BM25)
+
+BM25 lexical search is enabled by default and runs alongside the dense semantic search. A client-side BM25 tokenizer (English stemming + stopword filtering) computes term-frequency sparse vectors from each chunk's text. These are stored as Qdrant sparse vectors (`"chunk_bm25"`) with server-side IDF weighting. At query time, both searches run as parallel prefetches and results are fused via **Reciprocal Rank Fusion (RRF)**.
+
+Disable with: `vaultfind config set bm25.enabled false`
 
 ## Storage
 
